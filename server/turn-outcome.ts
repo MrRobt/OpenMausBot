@@ -120,8 +120,9 @@ export function turnEvidence(rows: readonly Message[]): TurnEvidence {
     const output = tool.itemId && typeof tool.output === "string" ? tool.output.split("\n").find((line) => line.trim()) : undefined;
     return clip(output ? `${tool.name}: ${output}` : tool.name, ERROR_CHARS);
   }).slice(-ERRORS_KEPT);
-  const okToolCalls = tools.filter((row) => row.tool!.ok !== false && row.tool!.itemId !== undefined).length;
-  const outward = outwardActions(rows);
+  const okToolCalls = tools.filter((row) => row.tool!.ok === true && row.tool!.itemId !== undefined).length;
+  // Reports require acknowledgement; restart protection remains conservative.
+  const outward = outwardActions(tools.filter((row) => row.tool!.ok === true));
   return { toolCalls: tools.filter((row) => row.tool!.itemId !== undefined).length, okToolCalls, errors, ...(outward.length ? { outward } : {}) };
 }
 

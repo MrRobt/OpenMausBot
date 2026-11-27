@@ -151,6 +151,13 @@ describe("outwardActions", () => {
 });
 
 describe("turnEvidence", () => {
+  it("does not report an unacknowledged tool as a successful call or confirmed outward effect", () => {
+    const pending = row({ name: "GMAIL_SEND_EMAIL", itemId: "pending-fixture" });
+    const confirmed = call("Read", true);
+    expect(turnEvidence([pending, confirmed])).toEqual({ toolCalls: 2, okToolCalls: 1, errors: [] });
+    expect(outwardActions([pending])).toEqual(["GMAIL_SEND_EMAIL"]);
+  });
+
   it("counts ok tool calls, keeps the last three errors oldest first with a failed tool's first output line, and the outward actions", () => {
     const rows = [
       call("Bash", true, { output: "ok" }),
