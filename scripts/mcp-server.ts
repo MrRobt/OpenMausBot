@@ -335,6 +335,8 @@ export const TOOLS: McpToolDefinition[] = [
         target_type: { type: "string", enum: ["bot", "channel"] },
         target_id: { type: "string" },
         title: { type: "string", description: "Optional task title." },
+        create_id: { type: "string", description: "Stable id for a first creation; must be paired with message_fingerprint." },
+        message_fingerprint: { type: "string", description: "64 lowercase hex characters fingerprinting the first message." },
       },
       required: ["target_type", "target_id"],
       additionalProperties: false,
@@ -992,8 +994,20 @@ export async function handleToolCall(
     case "create_task": {
       const targetId = idArg(args, "target_id");
       const title = optionalStringArg(args, "title", { max: 80 });
+      const createId = optionalStringArg(args, "create_id", { max: 80 });
+      const messageFingerprint = optionalStringArg(args, "message_fingerprint", { max: 64 });
+      if (Boolean(createId) !== Boolean(messageFingerprint)) {
+        throw new ToolInputError("create_id and message_fingerprint must be supplied together");
+      }
+      if (createId && !/^[A-Za-z0-9_-]{16,80}$/.test(createId)) {
+        throw new ToolInputError("create_id must be 16-80 letters, digits, - or _");
+      }
+      if (messageFingerprint && !/^[a-f0-9]{64}$/.test(messageFingerprint)) {
+        throw new ToolInputError("message_fingerprint must be 64 lowercase hex characters");
+      }
       const route = taskRoute(args.target_type, targetId);
-      const result = await fetcher(route, { method: "POST", body: JSON.stringify(title ? { title } : {}) });
+      const body = { ...(title ? { title } : {}), ...(createId ? { createId, messageFingerprint } : {}) };
+      const result = await fetcher(route, { method: "POST", body: JSON.stringify(body) });
       if (!isRecord(result?.task) || typeof result.task.threadId !== "string") {
         throw new Error("OpenMausBot did not return the created task");
       }
@@ -1003,6 +1017,7 @@ export async function handleToolCall(
         targetType: args.target_type,
         targetId,
         task: projectTask(result.task, activeTaskId),
+        ...(typeof result.task.createdAt === "number" ? { createdAt: result.task.createdAt } : {}),
       };
     }
 

@@ -309,6 +309,36 @@ describe("MCP tool execution", () => {
     expect(JSON.stringify(switched)).not.toContain("session");
   });
 
+  // I11 (V2 §3.5): new keyed create_task calls carry a paired create_id/fingerprint
+  // and project createdAt back, while legacy keyless calls stay byte-compatible.
+  it("carries paired keys and projects createdAt on keyed create_task, keeping legacy keyless calls intact", async () => {
+    const fetcher = vi.fn(async (_path: string, _options?: RequestInit) => ({
+      task: { threadId: "task-new-1", title: "Fresh", createdAt: 1700000000123 },
+    }));
+    const fingerprint = "c".repeat(64);
+    const keyed: any = await handleToolCall("create_task", {
+      target_type: "bot", target_id: "bot-1", title: "Fresh",
+      create_id: "stable-create-key-0001", message_fingerprint: fingerprint,
+    }, fetcher);
+    const sent = JSON.parse((fetcher.mock.calls[0]![1] as RequestInit).body as string);
+    expect(sent).toEqual({ title: "Fresh", createId: "stable-create-key-0001", messageFingerprint: fingerprint });
+    expect(keyed.task.taskId).toBe("task-new-1");
+    expect(keyed.createdAt).toBe(1700000000123);
+
+    fetcher.mockClear();
+    const legacy: any = await handleToolCall("create_task", {
+      target_type: "bot", target_id: "bot-1", title: "Fresh",
+    }, fetcher);
+    const legacyBody = JSON.parse((fetcher.mock.calls[0]![1] as RequestInit).body as string);
+    expect(legacyBody).toEqual({ title: "Fresh" });
+    expect(legacyBody.createId).toBeUndefined();
+    expect(legacy.task.taskId).toBe("task-new-1");
+
+    await expect(handleToolCall("create_task", {
+      target_type: "bot", target_id: "bot-1", title: "Fresh", create_id: "stable-create-key-0001",
+    }, fetcher)).rejects.toThrow("must be supplied together");
+  });
+
   it("rejects incomplete mutation responses before projecting them", async () => {
     const fetcher = vi.fn(async () => ({}));
 

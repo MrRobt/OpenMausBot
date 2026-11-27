@@ -22,6 +22,7 @@ import { madeThread, sawThread } from "../thread-presence.ts";
 import { refusalBody, userError } from "../user-errors.ts";
 import type { ServerErrorBody } from "../../shared/server-text.ts";
 import { readThreadNotifications, type NotificationListed } from "./notifications.ts";
+import { createReceiptActor, newThreadRequest, type TaskCreateReceipts } from "../task-create-receipts.ts";
 
 type HostedModels = NonNullable<ReturnType<typeof hostedModelPolicy>>;
 
@@ -44,6 +45,7 @@ export interface TaskRouteDeps {
   skillReview: Pick<SkillReview, "dropThread">;
   threadStarters: Pick<ThreadStarters, "set">;
   phoneSecretSubmissions: Pick<PhoneSecretSubmissionRegistry, "hasBot" | "hasThread">;
+  taskCreateReceipts: TaskCreateReceipts;
   titleRegenerations: Pick<Set<string>, "has" | "add" | "delete">;
   directTurnGenerationByThread: ReadonlyMap<string, string>;
   actorKey(auth: RequestAuth & { kind: "session" }): string;
@@ -81,7 +83,7 @@ export interface TaskRouteDeps {
 /** `deleteTasks`: the same deletion for the server's own use (a person leaving a Team Cloud, host/team-member-left.ts). */
 export function createTaskRoutes(deps: TaskRouteDeps): RouteHandler & { deleteTasks(botId: string, threadIds: string[]): ReturnType<TaskRouteDeps["store"]["deleteTasks"]> } {
   const {
-    store, hostedModels, coordinator, handoffs, skillReview, threadStarters, phoneSecretSubmissions, titleRegenerations,
+    store, hostedModels, coordinator, handoffs, skillReview, threadStarters, phoneSecretSubmissions, taskCreateReceipts, titleRegenerations,
     directTurnGenerationByThread, actorKey, cloudOwnerSession, cloudThreadRefusal, sharedWorkspaceFullAccessEnabled,
     supportsApprovalMode, threadBusy, broadcast, notificationListed, publicBot, wireBot, wireTask, pageSize, messagePage, checkedModelSelection,
     checkedTaskModelSwitch, threadTitleGate, generateThreadTitle, settleDirectFollowup, clearTurnDigestState,
@@ -104,6 +106,7 @@ export function createTaskRoutes(deps: TaskRouteDeps): RouteHandler & { deleteTa
     return null;
   };
   const deleteTasks = (botId: string, threadIds: string[]) => {
+    taskCreateReceipts.sealExistingThreads(threadIds.filter(id => store.taskByThread(botId, id)));
     const stagedSkillCleanups = new Map(threadIds.map((threadId) => [threadId, stagedSkillCleanupsForThread(threadId)]));
     for (const threadId of threadIds) coordinator.cancelDirect(threadId, "The source conversation was deleted");
     const result = store.deleteTasks(botId, threadIds);
@@ -214,10 +217,29 @@ export function createTaskRoutes(deps: TaskRouteDeps): RouteHandler & { deleteTa
         return json(res, 400, { error: "projectId must belong to this bot" });
       }
       // Who opened it decides who may answer its cards on a shared workspace, and on a team who sees it at all.
-      const task = store.createTask(bot.id, typeof body.title === "string" ? body.title : undefined, body.select !== false, body.projectId, undefined, body.approvalMode, undefined, cwd,
-        auth.kind === "session" ? (created) => threadStarters.set(created.threadId, actorKey(auth)) : undefined);
+      const keyed = newThreadRequest(body);
+      const beforeShown = auth.kind === "session" ? (created: TaskRecord) => threadStarters.set(created.threadId, actorKey(auth)) : undefined;
+      const create = (reservedThreadId?: string) => store.createTask(bot.id,
+        typeof body.title === "string" ? body.title : undefined, body.select !== false, body.projectId,
+        undefined, body.approvalMode, undefined, cwd, beforeShown, reservedThreadId);
+      let task: TaskRecord | null;
+      try {
+        if (keyed) {
+          const result = taskCreateReceipts.run(["bot", bot.id, createReceiptActor(auth)], keyed,
+            (id) => store.taskByThread(bot.id, id), create,
+            (id) => { const refusal = cloudThreadRefusal(auth, id); if (refusal) throw Object.assign(new Error(refusal), { status: 403 }); });
+          task = result.task;
+          if (!result.replayed) madeThread(bot.id, task.threadId);
+        } else {
+          task = create();
+          if (task) madeThread(bot.id, task.threadId);
+        }
+      } catch (error) {
+        const status = (error as { status?: number }).status;
+        if (status === undefined) throw error;
+        return json(res, status, { error: (error as Error).message });
+      }
       if (!task) return json(res, 500, { error: "couldn't create that task" });
-      madeThread(bot.id, task.threadId);
       return json(res, 201, { bot: publicBot(store.bot(bot.id)!), task: wireTask(task, store.bot(bot.id)!.modelSelection) } satisfies TaskResponse);
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/tasks\/delete$/);

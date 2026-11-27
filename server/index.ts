@@ -603,6 +603,7 @@ import { createRoomHoldRoutes } from "./routes/room-holds.ts";
 import { checkedGroupResponder, createGroupRoutes } from "./routes/groups.ts";
 import { createChannelRoutes } from "./routes/channels.ts";
 import { createTaskRoutes } from "./routes/tasks.ts";
+import { TaskCreateReceipts } from "./task-create-receipts.ts";
 import { createTeamRoutes } from "./routes/teams.ts";
 import { createThreadModelRoutes } from "./routes/thread-models.ts";
 import { createUndoRoutes } from "./routes/undo.ts";
@@ -2787,6 +2788,7 @@ const teamWelcome = createTeamWelcomeStore(DATA_DIR); const { cloudHealth, cloud
 const teamComputers = new TeamComputers(join(DATA_DIR, "team-computers.json"), ENVIRONMENT_ID);
 let followupsReady = false;
 const sendSequencer = new SendSequencer();
+const taskCreateReceipts = new TaskCreateReceipts();
 // Before the new-bot default is read: a saved default may name the engine.
 await retryComputerEngineMove(); mcpServersHost.boot(); dataEngine.onInstalledChange(() => broadcast({ kind: "config", ...configStatus() }));
 if (store.needsSeed()) await Promise.race([cloudCreditStarted, new Promise(resolve => setTimeout(resolve, 15_000).unref())]);
@@ -12073,6 +12075,7 @@ ROUTES.push(createChannelRoutes({
   actorKey,
   threadStarters,
   phoneSecretSubmissions,
+  taskCreateReceipts,
   sendSequencer,
   roomMemberContexts,
   skillReview,
@@ -12115,6 +12118,7 @@ const taskRoutes = createTaskRoutes({
   skillReview,
   threadStarters,
   phoneSecretSubmissions,
+  taskCreateReceipts,
   titleRegenerations,
   directTurnGenerationByThread,
   actorKey,

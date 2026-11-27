@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 import { flag, oneOf, parseDuration, usageError, type Flags } from "./args.ts";
@@ -102,6 +102,22 @@ export async function conversationFor(client: HeadlessClient, target: Target, ta
   return owner.threadId;
 }
 
+/** The client binds the first message to the creation key; the server still checks its own authorization. */
+export const conversationFingerprint = (text: string): string =>
+  createHash("sha256").update(JSON.stringify([text])).digest("hex");
+
+export async function keyedConversationFor(client: HeadlessClient, target: Target, task: string,
+  title: string, keyed: { createId: string; messageFingerprint: string }): Promise<{ threadId: string; createdAt?: number }> {
+  if (task !== "new") return { threadId: await conversationFor(client, target, task, title) };
+  const result = await client.tool("create_task", {
+    target_type: target.type, target_id: target.id, title,
+    create_id: keyed.createId, message_fingerprint: keyed.messageFingerprint,
+  }) as Record<string, any>;
+  const threadId = result?.task?.taskId;
+  if (typeof threadId !== "string") throw usageError("OpenMausBot did not return the created conversation");
+  return { threadId, ...(typeof result.createdAt === "number" ? { createdAt: result.createdAt } : {}) };
+}
+
 /** --title, else the message's first line. */
 export const conversationTitle = (ctx: VerbContext, text: string): string =>
   (flag(ctx.flags, "title") ?? text.split("\n")[0]!).trim().slice(0, 80) || "Headless run";
@@ -132,6 +148,15 @@ export async function readMessage(ctx: VerbContext, positional: string | undefin
 
 /** A send id this command makes up, so a retried send is never a second message. */
 export const newSendId = () => `cli-${randomBytes(12).toString("base64url")}`;
+
+/** Validate before any task creation or network request can have side effects. */
+export function requestedSendId(ctx: VerbContext): string {
+  const id = flag(ctx.flags, "send-id");
+  if (id !== undefined && !/^[A-Za-z0-9_-]{16,80}$/.test(id)) {
+    throw usageError("--send-id must be 16-80 letters, digits, - or _");
+  }
+  return id ?? newSendId();
+}
 
 export const waitPolicy = (ctx: VerbContext) => ({
   onInput: oneOf(flag(ctx.flags, "on-input"), "--on-input", ["exit", "wait", "stop"] as const, "exit"),

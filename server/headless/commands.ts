@@ -1,6 +1,6 @@
 // `--json` prints a tool's result unchanged; plain output is a line per item.
 import { EXIT, flag, parseCount, parseDuration, requiredFlag, usageError } from "./args.ts";
-import { conversationFor, conversationTitle, newSendId, readMessage, resolveTarget, type Target, type VerbContext, type VerbOutcome } from "./context.ts";
+import { conversationFingerprint, conversationFor, conversationTitle, keyedConversationFor, requestedSendId, readMessage, resolveTarget, type Target, type VerbContext, type VerbOutcome } from "./context.ts";
 import { oneLine, shortId } from "./output.ts";
 import { stopConversation } from "./run.ts";
 
@@ -124,6 +124,7 @@ export async function messages(ctx: VerbContext): Promise<VerbOutcome> {
 }
 
 export async function send(ctx: VerbContext): Promise<VerbOutcome> {
+  const sendId = requestedSendId(ctx);
   const channelOnly = ctx.verb === "send-channel";
   const named = Boolean(flag(ctx.flags, "bot") ?? flag(ctx.flags, "channel") ?? flag(ctx.flags, "thread"));
   const [first, second] = ctx.positionals;
@@ -134,12 +135,14 @@ export async function send(ctx: VerbContext): Promise<VerbOutcome> {
   const target = await resolveTarget(opened ? { ...ctx, flags: { ...ctx.flags, task: undefined } } : ctx, named ? undefined : first, channelOnly ? "channel" : "any");
   const tool = target.type === "bot" ? "send_bot_message" : "send_channel_message";
   const title = opened === "new" && !target.taskId ? conversationTitle(ctx, text) : undefined;
+  const keyed = title !== undefined ? { createId: sendId, messageFingerprint: conversationFingerprint(text) } : undefined;
   const current = opened === "current" && !target.taskId ? await conversationFor(await ctx.client(), target, "current") : undefined;
-  const args = { ...targetArgs(current ? { ...target, taskId: current } : target), text, send_id: flag(ctx.flags, "send-id") ?? newSendId() };
+  const args = { ...targetArgs(current ? { ...target, taskId: current } : target), text, send_id: sendId };
   const preview = dryRun(ctx, tool, args, title !== undefined ? { newConversation: { title } } : {});
   if (preview) return preview;
   const client = await ctx.client();
-  const result = await client.tool(tool, title !== undefined ? { ...args, task_id: await conversationFor(client, target, "new", title) } : args);
+  const created = keyed ? await keyedConversationFor(client, target, "new", title!, keyed) : undefined;
+  const result = await client.tool(tool, created ? { ...args, task_id: created.threadId } : args);
   return {
     result: title !== undefined ? { ...result, newConversation: { title } } : result, exitCode: EXIT.done,
     human: [`Sent to ${target.name ?? target.id} ${title !== undefined ? `in a new conversation, "${title}", ` : ""}(thread ${result.taskId})${result.queued ? "; it waits until the turn running there ends" : ""}.`,

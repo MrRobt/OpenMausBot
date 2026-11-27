@@ -37,7 +37,8 @@ describe("send", () => {
     const { code, out } = await h.run(["send", "Launch Room", "Plan the launch\nwith everyone", "--task", "new"]);
     expect(code).toBe(0);
     expect(h.calls.map((call) => call.name)).toEqual(["create_task", "send_channel_message"]);
-    expect(h.calls[0]!.args).toEqual({ target_type: "channel", target_id: "room", title: "Plan the launch" });
+    expect(h.calls[0]!.args).toEqual({ target_type: "channel", target_id: "room", title: "Plan the launch",
+      create_id: expect.stringMatching(/^cli-/), message_fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) });
     expect(h.calls[1]!.args).toEqual({ channel_id: "room", task_id: "fresh", text: "Plan the launch\nwith everyone", send_id: expect.stringMatching(/^cli-/) });
     expect(out[0]).toBe('Sent to Launch Room in a new conversation, "Plan the launch", (thread fresh).');
   });
@@ -46,7 +47,8 @@ describe("send", () => {
     const h = harness();
     const { code, out } = await h.run(["send", "--bot", "lead", "hello", "--task", "new", "--title", "Daily check", "--json"]);
     expect(code).toBe(0);
-    expect(h.calls[0]!.args).toEqual({ target_type: "bot", target_id: "lead", title: "Daily check" });
+    expect(h.calls[0]!.args).toEqual({ target_type: "bot", target_id: "lead", title: "Daily check",
+      create_id: expect.stringMatching(/^cli-/), message_fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) });
     expect(JSON.parse(out[0]!)).toMatchObject({ taskId: "fresh", newConversation: { title: "Daily check" } });
   });
 
@@ -57,6 +59,18 @@ describe("send", () => {
     await h.run(["send", "Launch Room", "hello", "--task", "r-old"]);
     expect(h.calls.map((call) => [call.name, call.args.task_id])).toEqual([
       ["send_channel_message", undefined], ["send_channel_message", "r-active"], ["send_channel_message", "r-old"]]);
+  });
+
+  it("rejects a malformed send id before creating any new task, including dry runs", async () => {
+    const h = harness();
+    for (const key of ["short", "invalid key with spaces", "x".repeat(81)]) {
+      for (const extra of [[], ["--dry-run"]]) {
+        const result = await h.run(["send", "Launch Room", "hello", "--task", "new", "--send-id", key, "--json", ...extra]);
+        expect(result.code).toBe(2);
+        expect(JSON.parse(result.out[0]!).error).toContain("--send-id");
+      }
+    }
+    expect(h.calls).toEqual([]);
   });
 
   it("starts nothing on --dry-run, and refuses --title without --task new", async () => {

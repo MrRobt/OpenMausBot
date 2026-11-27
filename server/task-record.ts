@@ -36,11 +36,20 @@ export type NewThreadLevel = "ask" | "full" | { from: ApprovalMode };
 
 const levelFrom = (bot: BotRecord, mode: ApprovalMode) => ({ approvalMode: mode, autoApprove: mode === "auto", alwaysAllow: [...(bot.alwaysAllow ?? [])] });
 
+const reservedThreadIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+
+/** Only the server's creation receipt supplies this; an HTTP body can never name an internal thread id. */
+export function checkedReservedThreadId(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (!reservedThreadIdPattern.test(value)) throw new Error("Invalid reserved conversation id");
+  return value;
+}
+
 export function buildTask(bot: BotRecord, title?: string, projectId?: string, openedBy?: TaskOpenedBy,
-  approvalMode?: NewThreadLevel, modelSelection?: ModelSelection, cwd?: string | null): TaskRecord {
+  approvalMode?: NewThreadLevel, modelSelection?: ModelSelection, cwd?: string | null, reservedThreadId?: string): TaskRecord {
   const createdAt = Date.now();
   return {
-    threadId: newId(),
+    threadId: checkedReservedThreadId(reservedThreadId) ?? newId(),
     title: threadTitleFrom(title),
     createdAt,
     updatedAt: createdAt,

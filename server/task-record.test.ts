@@ -6,8 +6,33 @@ import { DATA_DIR } from "./config.ts";
 import type { ModelSelection } from "./contracts.ts";
 import { createOwnThreads } from "./host/own-threads.ts";
 import { Store } from "./store.ts";
+import { buildTask, checkedReservedThreadId } from "./task-record.ts";
 
 const selection = (): ModelSelection => ({ instanceId: "claude", model: "claude-sonnet-5" });
+
+describe("server-reserved conversation ids", () => {
+  const reserved = "123e4567-e89b-42d3-a456-426614174001";
+
+  it("uses the reserved id only when it is a canonical UUID and keeps legacy creation unchanged", () => {
+    expect(checkedReservedThreadId(undefined)).toBeUndefined();
+    expect(checkedReservedThreadId(reserved)).toBe(reserved);
+    const store = new Store(selection);
+    const bot = store.createBot();
+    expect(store.createTask(bot.id, "Keyed", false, undefined, undefined, undefined, undefined, undefined, undefined, reserved)?.threadId).toBe(reserved);
+    expect(store.createTask(bot.id, "Legacy", false)?.threadId).not.toBe(reserved);
+  });
+
+  it("refuses a malformed or upper-case reserved id before creating a task", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    const before = store.bot(bot.id)!.tasks?.length;
+    for (const bad of ["short", reserved.toUpperCase(), "not-a-uuid"]) {
+      expect(() => buildTask(store.bot(bot.id)!, "Bad", undefined, undefined, undefined, undefined, undefined, bad)).toThrow(/reserved conversation id/);
+      expect(() => store.createGroupTask(store.createGroup("Product", [bot.id]).id, "Bad", true, bad)).toThrow(/reserved conversation id/);
+    }
+    expect(store.bot(bot.id)!.tasks?.length).toBe(before);
+  });
+});
 const REQUEST = "123e4567-e89b-42d3-a456-426614174000";
 const levelOf = (store: Store, botId: string, threadId: string) => approvalModeFor(store.projectBotForTask(botId, threadId)!);
 

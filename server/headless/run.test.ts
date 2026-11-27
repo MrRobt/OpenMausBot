@@ -56,12 +56,24 @@ function harness(waits: Rec[], options: { jobRead?: () => unknown; delayMs?: num
 }
 
 describe("run", () => {
+  it("rejects malformed send ids before opening a new conversation", async () => {
+    const h = harness([]);
+    for (const key of ["short", "invalid key with spaces", "x".repeat(81)]) {
+      const result = await h.run(["run", "Room Lead", "Go", "--send-id", key, "--wait", "none", "--json"]);
+      expect(result.code).toBe(2);
+      expect(result.result.error).toContain("--send-id");
+    }
+    expect(h.calls).toEqual([]);
+    expect(h.requests).toEqual([]);
+  });
+
   it("opens a conversation, pins the job to the server's clock, sends once with a send id, and waits for the whole job", async () => {
     const h = harness([waited("settled", "completed", job("completed", "v2", { nodes: [{ id: "root", status: "completed" }] }))]);
     const { code, result, progress } = await h.run(["run", "Room Lead", "Rehearse the launch\nof example.com", "--json"]);
     expect(code).toBe(0);
     expect(h.calls.map((call) => call.name)).toEqual(["create_task", "send_bot_message", "wait_for_conversation"]);
-    expect(h.calls[0]!.args).toEqual({ target_type: "bot", target_id: "lead", title: "Rehearse the launch" });
+    expect(h.calls[0]!.args).toEqual({ target_type: "bot", target_id: "lead", title: "Rehearse the launch",
+      create_id: expect.stringMatching(/^cli-[\w-]{16}$/), message_fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) });
     expect(h.calls[1]!.args).toEqual({ bot_id: "lead", task_id: "t1", text: "Rehearse the launch\nof example.com", send_id: expect.stringMatching(/^cli-[\w-]{16}$/) });
     expect(h.calls[2]!.args).toEqual({ target_type: "bot", target_id: "lead", task_id: "t1", timeout_seconds: 120, scope: "job", since_ms: 1_000 });
     expect(h.requests.map((request) => request.path)).toEqual(["/api/bots?messages=0", "/api/threads/t1/job?"]);

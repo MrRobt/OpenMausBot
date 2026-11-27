@@ -2,7 +2,7 @@
 import { messageFileTargets } from "../message-file.ts";
 import { EXIT, flag, HeadlessError, oneOf, parseCount } from "./args.ts";
 import { readJob, type HeadlessClient } from "./client.ts";
-import { conversationFor, conversationTitle, newSendId, readMessage, resolveTarget, waitPolicy, type Target, type VerbContext,
+import { conversationFingerprint, conversationFor, conversationTitle, keyedConversationFor, requestedSendId, readMessage, resolveTarget, waitPolicy, type Target, type VerbContext,
   type VerbOutcome } from "./context.ts";
 import { exportFolder, exportJob } from "./export.ts";
 import { oneLine } from "./output.ts";
@@ -163,6 +163,7 @@ const interrupted = (watching: Watching): HeadlessError =>
     watching.threadId ? `wait again: ${waitAgain(watching)}` : "openmausbot wait TARGET picks it up again");
 
 export async function runVerb(ctx: VerbContext): Promise<VerbOutcome> {
+  const sendId = requestedSendId(ctx);
   const named = Boolean(flag(ctx.flags, "bot") ?? flag(ctx.flags, "channel") ?? flag(ctx.flags, "thread"));
   const [first, second] = ctx.positionals;
   const text = await readMessage(ctx, named ? first : second);
@@ -173,9 +174,12 @@ export async function runVerb(ctx: VerbContext): Promise<VerbOutcome> {
   const task = flag(ctx.flags, "task")?.trim() || (flag(ctx.flags, "thread") ? undefined : "new");
   const target = await resolveTarget({ ...ctx, flags: { ...ctx.flags, task: undefined } }, named ? undefined : first);
   const client = await ctx.client();
-  const threadId = target.taskId ?? await conversationFor(client, target, task!, conversationTitle(ctx, text));
-  const since = Number((await readJob(client, threadId)).now);
-  const sendId = flag(ctx.flags, "send-id") ?? newSendId();
+  const title = conversationTitle(ctx, text);
+  const keyed = task === "new" && !target.taskId ? { createId: sendId, messageFingerprint: conversationFingerprint(text) } : undefined;
+  const created = keyed ? await keyedConversationFor(client, target, "new", title, keyed) : undefined;
+  const threadId = target.taskId ?? (created ? created.threadId : await conversationFor(client, target, task!, title));
+  const since = created?.createdAt ?? Number((await readJob(client, threadId)).now);
+
   const tool = target.type === "bot" ? "send_bot_message" : "send_channel_message";
   const args = { [`${target.type}_id`]: target.id, task_id: threadId, text, send_id: sendId };
   let sent: Rec | undefined;

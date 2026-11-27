@@ -42,7 +42,7 @@ import { appsFromCreator } from "./inherited-apps.ts"; import { newBotOwner, sha
 import { ThreadCache, type ThreadState } from "./thread-cache.ts";
 import { lastMessageId, messagesBefore } from "./thread-history.ts";
 import { titleFromMessage, UNTITLED_TASK } from "./thread-title.ts";
-import { buildTask, threadTitleFrom, unreadTargetTask, UNTITLED_THREAD, type NewThreadLevel } from "./task-record.ts";
+import { buildTask, checkedReservedThreadId, threadTitleFrom, unreadTargetTask, UNTITLED_THREAD, type NewThreadLevel } from "./task-record.ts";
 import { repairLegacyWorkThreads } from "./legacy-work-threads.ts";
 import { createBotFork, createGroupFork } from "./store-forks.ts";
 import { branchLeafFrom } from "../shared/conversation-branch.ts";
@@ -951,12 +951,12 @@ export class Store {
     return group;
   }
 
-  createGroupTask(groupId: string, title?: string, activate = true): GroupTaskRecord | null {
+  createGroupTask(groupId: string, title?: string, activate = true, reservedThreadId?: string): GroupTaskRecord | null {
     const group = this.group(groupId);
     if (!group || group.dm) return null;
     const createdAt = Date.now();
     const task: GroupTaskRecord = {
-      threadId: newId(),
+      threadId: checkedReservedThreadId(reservedThreadId) ?? newId(),
       title: title?.trim().slice(0, 80) || UNTITLED_TASK,
       createdAt,
       updatedAt: createdAt,
@@ -2131,11 +2131,11 @@ export class Store {
   }
 
   createTask(botId: string, title?: string, activate = true, projectId?: string, openedBy?: TaskOpenedBy, approvalMode?: NewThreadLevel,
-    modelSelection?: ModelSelection, cwd?: string, beforeShown?: (task: TaskRecord) => void): TaskRecord | null {
+    modelSelection?: ModelSelection, cwd?: string, beforeShown?: (task: TaskRecord) => void, reservedThreadId?: string): TaskRecord | null {
     const bot = this.own(botId);
     if (!bot) return null;
     if (projectId !== undefined && !this.project(botId, projectId)) return null;
-    const task = buildTask(bot, title, projectId, openedBy, approvalMode, modelSelection, cwd);
+    const task = buildTask(bot, title, projectId, openedBy, approvalMode, modelSelection, cwd, reservedThreadId);
     this.commitBotChange(bot, "the new thread", () => {
       bot.tasks = [task, ...(bot.tasks ?? [])];
       if (activate) this.mirrorActiveTask(bot, task);

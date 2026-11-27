@@ -43,6 +43,7 @@ import { FORK_BUSY, FORK_NO_TEXT, parseForkRequest } from "./fork-request.ts";
 import { PASS, type RouteHandler } from "./table.ts";
 import { sawThread } from "../thread-presence.ts";
 import { readThreadNotifications, type NotificationListed } from "./notifications.ts";
+import { createReceiptActor, newThreadRequest, type TaskCreateReceipts } from "../task-create-receipts.ts";
 
 export type MessagePage = { messages: Array<Message | Record<string, unknown>>; hasMore?: boolean; activeLeafId: string | null };
 
@@ -64,6 +65,7 @@ export interface ChannelRouteDeps {
   actorKey(auth: RequestAuth & { kind: "session" }): string;
   threadStarters: Pick<ThreadStarters, "set">;
   phoneSecretSubmissions: Pick<PhoneSecretSubmissionRegistry, "hasGroup" | "hasThread">;
+  taskCreateReceipts: TaskCreateReceipts;
   sendSequencer: Pick<SendSequencer, "run">;
   roomMemberContexts: Pick<RoomContextTracker, "request">;
   skillReview: Pick<SkillReview, "dropThread">;
@@ -120,7 +122,7 @@ type StopAnswer = { status: 200 | 403 | 409; body: { ok: true } | { error: strin
 
 export function createChannelRoutes(deps: ChannelRouteDeps): RouteHandler {
   const {
-    store, cfg, broadcast, notificationListed, actorKey, threadStarters, phoneSecretSubmissions, sendSequencer, roomMemberContexts, skillReview,
+    store, cfg, broadcast, notificationListed, actorKey, threadStarters, phoneSecretSubmissions, taskCreateReceipts, sendSequencer, roomMemberContexts, skillReview,
     groupSpeakers, groupTurnOperations, lastReply, cloudThreadRefusal, messageSender, usageTriggerFor, publicGroupState,
     groupWithThread, updateChannel, groupIsWorking, groupThreadIsWorking, readCursor, pageSize, messagePage,
     resolveReplyTarget, runningTurnInstance, startGroupTurn, engineSteersImages, applyRoomHoldsFromMessage, cancelGroupTurnOperations,
@@ -139,6 +141,7 @@ export function createChannelRoutes(deps: ChannelRouteDeps): RouteHandler {
     return notYours ? { status: 403, error: notYours } : null;
   };
   const deleteGroupTasks = (groupId: string, threadIds: string[]) => {
+    taskCreateReceipts.sealExistingThreads(threadIds.filter(id => store.groupTaskByThread(groupId, id)));
     const stagedSkillCleanups = new Map(threadIds.map((threadId) => [threadId, stagedSkillCleanupsForThread(threadId)]));
     const result = store.deleteGroupTasks(groupId, threadIds);
     for (const threadId of result?.deleted ?? []) {
@@ -182,9 +185,26 @@ export function createChannelRoutes(deps: ChannelRouteDeps): RouteHandler {
       if (!body || typeof body !== "object" || Array.isArray(body)) {
         return json(res, 400, { error: "body must be a JSON object" });
       }
-      const request = createGroupTaskRequestSchema.safeParse(body);
-      if (!request.success) return json(res, 400, { error: "title must be text" });
-      const task = store.createGroupTask(group.id, request.data.title, request.data.activate !== false);
+      // Keyed requests must be read before zod strips unknown fields.
+      const keyed = newThreadRequest(body);
+      let task: ReturnType<Store["createGroupTask"]>;
+      try {
+        if (keyed) {
+          const result = taskCreateReceipts.run(["channel", group.id, createReceiptActor(auth)], keyed,
+            (id) => store.groupTaskByThread(group.id, id),
+            (id) => store.createGroupTask(group.id, typeof body.title === "string" ? body.title : undefined, true, id),
+            (id) => { const refusal = cloudThreadRefusal(auth, id); if (refusal) throw Object.assign(new Error(refusal), { status: 403 }); });
+          task = result.task;
+        } else {
+          const request = createGroupTaskRequestSchema.safeParse(body);
+          if (!request.success) return json(res, 400, { error: "title must be text" });
+          task = store.createGroupTask(group.id, request.data.title, request.data.activate !== false);
+        }
+      } catch (error) {
+        const status = (error as { status?: number }).status;
+        if (status === undefined) throw error;
+        return json(res, status, { error: (error as Error).message });
+      }
       if (!task) return json(res, 500, { error: "couldn't create that task" });
       // Who opened it decides who may answer its cards on a shared workspace.
       if (auth.kind === "session") threadStarters.set(task.threadId, actorKey(auth));

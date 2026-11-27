@@ -4,7 +4,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
 
@@ -125,7 +125,8 @@ export interface VerificationServer {
   info: { url: string; pid: number; dataDir: string; logPath: string };
   fixtureDumpPath: string;
   child: ChildProcess;
-  close(): Promise<void>;
+  /** `cleanup: false` leaves the owned temporary data dir for a restart check. */
+  close(cleanup?: boolean): Promise<void>;
 }
 
 /** A temporary home in `dataDir`, the fake engine's knobs from `parentEnv`, node
@@ -301,7 +302,19 @@ export async function launchVerificationServer(
   boatFixtureApi?: string,
   /** Programmatic web UI qualification against the fixture's static server. */
   staticDir?: string,
+  /** Programmatic restart checks only: reuse an owned fixture's data dir and port. */
+  reuse?: { dataDir: string; port: number },
 ): Promise<VerificationServer> {
+  if (reuse) {
+    const root = tmpdir();
+    const ownedPath = relative(root, reuse.dataDir);
+    if (!ownedPath || ownedPath.startsWith("..") || isAbsolute(ownedPath)) {
+      throw new ControlOmbError("Restart verification requires a data directory owned by this test");
+    }
+    if (reuse.port === 8799 || reuse.port < 1 || reuse.port > 65535) {
+      throw new ControlOmbError("Restart verification refuses the production or an invalid port");
+    }
+  }
   if (boatFixtureApi) {
     if (!/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}$/.test(boatFixtureApi)) {
       throw new ControlOmbError("Boat verification requires an explicit loopback HTTP provider");
@@ -317,12 +330,12 @@ export async function launchVerificationServer(
   }
   // OMB_TEST_PORTS=19975-19999 keeps a recipe's fixture in a range of its own.
   const range = /^(\d+)-(\d+)$/.exec((parentEnv.OMB_TEST_PORTS ?? process.env.OMB_TEST_PORTS)?.trim() ?? "");
-  const port = range ? await freePortBlock([0, 1], Number(range[1]), Number(range[2]) - Number(range[1])) : await freePortBlock([0, 1]);
+  const port = reuse?.port ?? (range ? await freePortBlock([0, 1], Number(range[1]), Number(range[2]) - Number(range[1])) : await freePortBlock([0, 1]));
   if (signal?.aborted) throw new ControlOmbError("verification launch cancelled");
   const url = `http://127.0.0.1:${port}`;
   // Native browser daemons use UNIX sockets, and a macOS temp home can exceed
   // their path limit.
-  const dataDir = mkdtempSync(join(browser && process.platform !== "win32" ? "/tmp" : tmpdir(), "openmausbot-verify-data-"));
+  const dataDir = reuse?.dataDir ?? mkdtempSync(join(browser && process.platform !== "win32" ? "/tmp" : tmpdir(), "openmausbot-verify-data-"));
   const fixtureTemp = join(dataDir, "tmp");
   const fixtureDumpPath = join(dataDir, "fake-claude-dump.json");
   mkdirSync(fixtureTemp, { recursive: true });
@@ -434,12 +447,12 @@ export async function launchVerificationServer(
     }
   } catch (error) {
     await waitForExit(child, { signal: "SIGTERM" });
-    await removeTempDir(dataDir);
+    if (!reuse) await removeTempDir(dataDir);
     throw error;
   }
 
   // Pinned: the random starter name shares a pool with names e2e suites plan.
-  try {
+  if (!reuse) try {
     // First-run filesystem work can exceed a second on Windows.
     const timeout = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
     const list = await fetch(`${url}/api/bots`, {
@@ -461,7 +474,7 @@ export async function launchVerificationServer(
     if (!rename.ok) throw new Error(`verification starter rename failed (${rename.status}); see ${logPath}`);
   } catch (error) {
     await waitForExit(child, { signal: "SIGTERM" });
-    await removeTempDir(dataDir);
+    if (!reuse) await removeTempDir(dataDir);
     throw error;
   }
 
@@ -470,11 +483,11 @@ export async function launchVerificationServer(
     info: { url, pid: child.pid!, dataDir, logPath },
     fixtureDumpPath,
     child,
-    async close() {
+    async close(cleanup = true) {
       if (closed) return;
       closed = true;
       await waitForExit(child, { signal: "SIGTERM" });
-      await removeTempDir(dataDir);
+      if (cleanup && !reuse) await removeTempDir(dataDir);
     },
   };
 }
