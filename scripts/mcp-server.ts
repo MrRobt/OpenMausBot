@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Model Context Protocol (MCP) server for OpenMausBot over JSON-RPC 2.0 stdio,
 // for external agents (Hermes, Claude Desktop, Cursor, etc.).
-import readline from "node:readline";
 import { allowedServerOrigin, EXAMPLE_ADDRESS } from "../electron/server-address.mjs";
 import { isRecord, projectMessage } from "./mcp-message-projection.ts";
+import { readStdioLines } from "../server/stdio-lines.ts";
 
 /** A server's base URL: https anywhere, http only on loopback or a private network (LAN, Tailscale). */
 export function validateBaseUrl(url: string): string {
@@ -1383,15 +1383,9 @@ export async function processMcpMessage(
  * resolves): what `pnpm mcp`, dist-server/mcp-server.js and `openmausbot mcp` run. */
 export function runStdio(): Promise<void> {
   log("OpenMausBot MCP server running on stdio");
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    terminal: false,
-  });
-
   const activeRequests = new Set<Promise<void>>();
 
-  rl.on("line", (line) => {
+  return new Promise((closed) => readStdioLines(process.stdin, (line) => {
     const task = (async () => {
       try {
         const response = await processMcpMessage(line);
@@ -1406,9 +1400,7 @@ export function runStdio(): Promise<void> {
     task.finally(() => {
       activeRequests.delete(task);
     });
-  });
-
-  return new Promise((closed) => rl.on("close", async () => {
+  }, async () => {
     for (const controller of activeMcpControllers) {
       controller.abort(new DOMException("Request cancelled", "AbortError"));
     }
@@ -1416,7 +1408,7 @@ export function runStdio(): Promise<void> {
       await Promise.allSettled(Array.from(activeRequests));
     }
     // Do not force an exit here: stdout may still be flushing the final
-    // JSON-RPC frame. With stdin and readline closed, Node exits naturally
+    // JSON-RPC frame. With stdin closed, Node exits naturally
     // once that buffered write has drained.
     process.exitCode = 0;
     closed();
